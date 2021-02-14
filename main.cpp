@@ -7,6 +7,8 @@
 //
 //
 // Note variables indexed from 1. n is normal, -n in negation
+//#define NDEBUG
+
 #include <random>
 #include <queue>
 #include <algorithm>
@@ -103,113 +105,6 @@ set<int> get_dependent_clauses(const map<int,int>& group, const unordered_map<in
     return dependent_clauses;
 }
 
-// num fully in group, num part in group
-pair<int, int> num_clauses(const set<int>& group, const set<int>& dependent_clauses, const vector<vector<int>>& clause_list) {
-
-    int num_full_in = 0;
-    int num_part_in = 0;
-
-    for (int clause_num : dependent_clauses) {
-        bool full_in = true;
-        for (int var : clause_list[clause_num]) {
-            if (group.find(abs(var)) == group.end()) {
-                full_in = false;
-                break;
-            }
-        }
-
-        if (full_in) num_full_in += 1;
-        else num_part_in += 1;
-    }
-
-    return make_pair(num_full_in, num_part_in);
-}
-
-struct AddInfo {
-    int var;
-    int clause_out;
-    int clause_in;
-};
-
-AddInfo find_best_to_add(const set<int>& group, const unordered_map<int, vector<int>>& var_to_clauses, const vector<vector<int>>& clause_list) {
-    int best_score = clause_list.size();
-    int best_num_in = 0;
-    int best_var = 0;
-
-    set<int> dependent_clauses = get_dependent_clauses(group, var_to_clauses);
-    set<int> dependent_vars;
-    for (int clause_num : dependent_clauses) {
-        for (int var : clause_list[clause_num]) {
-            if (group.find(abs(var)) != group.end()) {
-                //cout << var << " already in group\n";
-                continue;
-            }
-            if (var_to_clauses.find(abs(var)) == var_to_clauses.end()) {
-                //cout << var << " not in var to clauses\n";
-                continue;
-            }
-            dependent_vars.insert(abs(var));
-        }
-    }
-
-    cout << "dep clauses " << dependent_clauses.size() << " dep vars " << dependent_vars.size() << "\n";
-
-    // TODO replace dependent vars with everything?
-    for (auto var : dependent_vars) {
-        //int var = p.first;
-        if (group.find(var) != group.end()) continue;
-
-        set<int> test_group = group;
-        test_group.insert(var);
-        set<int> test_dependent_clauses = get_dependent_clauses(test_group, var_to_clauses);
-        auto score = num_clauses(test_group, test_dependent_clauses, clause_list);
-
-        if (score.second < best_score) {
-            best_score = score.second;
-            best_num_in = score.first;
-            best_var = var;
-        }
-    }
-
-    AddInfo ai;
-    ai.var = best_var;
-    ai.clause_out = best_score;
-    ai.clause_in = best_num_in;
-
-    return ai;
-}
-
-struct ScoreObj {
-    int num0 = 0;
-    int num1 = 0;
-    int num2 = 0;
-
-    bool operator<(const ScoreObj& rhs) {
-        if (num0 < rhs.num0) {
-            return true;
-        }
-        if (num0 > rhs.num0) {
-            return false;
-        }
-
-        if (num1 < rhs.num1) {
-            return true;
-        }
-        if (num1 > rhs.num1) {
-            return false;
-        }
-
-        if (num2 < rhs.num2) {
-            return true;
-        }
-        if (num2 > rhs.num2) {
-            return false;
-        }
-
-        return false;
-    }
-};
-
 struct ImplicationData {
     vector<int> pos;
     vector<bool> vals;
@@ -241,30 +136,23 @@ vector<ImplicationData> get_implications(int var, map<int, int> group, const uno
     return impl_list;
 }
 
-// checks for possible assignment
-// returns (can_be_true, can_be_false)
-pair<bool, bool> poss_assign(const vector<bool>& ass, vector<ImplicationData> impls) {
-    bool can_be_true = true;
-    bool can_be_false = true;
-    for (const auto& impl : impls) {
-        bool impl_active = true;
-        for (size_t i = 0; i < impl.pos.size(); ++i) {
-            if (ass.at(impl.pos[i]) == impl.vals[i]) {
-                impl_active = false;
-                break;
-            }
-        }
-
-        if (!impl_active) continue;
-
-        if (impl.implAss) {
-            can_be_false = false;
-        } else {
-            can_be_true = false;
-        }
+class ImplicationTracker {
+    ImplicationTracker(map<int, int>& implication_counter_, int var_, bool value_) : implication_counter(implication_counter_), var(var_), value(value_) {
+        ++implication_counter[var];
     }
-    return make_pair(can_be_true, can_be_false);
-}
+
+    ImplicationTracker(const ImplicationTracker& other) : implication_counter(other.implication_counter), var(other.var), value(other.value) {
+        ++implication_counter[var];
+    }
+
+    ~ImplicationTracker() {
+        --implication_counter[var];
+    }
+private:
+    map<int, int>& implication_counter;
+    int var;
+    bool value;
+};
 
 class Assignment {
 public:
@@ -334,19 +222,19 @@ public:
         }
         return true;
     }
-private:
+public: // TODO make this private?
     map<int, bool> ass;
-public:
     map<int, bool> implications;
     const map<int, int>& group;
     const unordered_map<int, vector<int>>& var_to_clauses;
     const vector<vector<int>>& clause_list;
 }; 
-void get_cluster2(int init_var, const unordered_map<int, vector<int>>& var_to_clauses, const vector<vector<int>>& clause_list) {
+
+map<int, int> get_cluster(int init_var, const unordered_map<int, vector<int>>& var_to_clauses, const vector<vector<int>>& clause_list, int max_count, const set<int>& used) {
     int counter = 0;
     map<int, int> group;
     vector<int> vars;
-    vars.push_back(init_var);
+    //vars.push_back(init_var);
     group[init_var] = counter++;
     vector<Assignment> assignments;
     assignments.emplace_back(Assignment(group, var_to_clauses, clause_list));
@@ -354,21 +242,24 @@ void get_cluster2(int init_var, const unordered_map<int, vector<int>>& var_to_cl
     assignments.emplace_back(Assignment(group, var_to_clauses, clause_list));
     assignments.back().assign(init_var, false);
 
-    while (true) {
+    while (assignments.size() < max_count) {
         map<int, int> implication_counter;
-        for (const auto& ass : assignments) {
-            //cout << "impl size" << ass.implications.size() << endl;
-            ass.add_implications(implication_counter);
-        }
-
         int max_counter = 0;
         int max_var = 0;
-        for (auto p : implication_counter) {
-            if (p.second > max_counter) {
-                max_counter = p.second;
-                max_var = p.first;
+
+        double num_implications = 0;
+        for (const auto& ass : assignments) {
+            num_implications += ass.implications.size();
+            for (auto p : ass.implications) {
+                int num_impl = ++implication_counter[abs(p.first)];
+                if (num_impl > max_counter && used.find(abs(p.first)) == used.end()) {
+                    max_counter = num_impl;
+                    max_var = abs(p.first);
+                }
             }
         }
+        //cout << "avg num implications: " << num_implications / assignments.size() << " " << implication_counter.size() << endl;
+
         assert(max_counter != 0);
 
         vector<Assignment> new_assignments;
@@ -384,154 +275,19 @@ void get_cluster2(int init_var, const unordered_map<int, vector<int>>& var_to_cl
         }
 
         assignments = move(new_assignments);
-        cout << counter << " num ass " << assignments.size() << endl;
-    }
-}
-
-void get_cluster(int init_var, const unordered_map<int, vector<int>>& var_to_clauses, const vector<vector<int>>& clause_list) {
-    int counter = 0;
-    map<int, int> group;
-    vector<int> vars;
-    vars.push_back(init_var);
-    group[init_var] = counter++;
-    vector<vector<bool>> satisfiable;
-    satisfiable.emplace_back(vector<bool>({true}));
-    satisfiable.emplace_back(vector<bool>({false}));
-
-    while (true) {
-        set<int> dependent_clauses = get_dependent_clauses(group, var_to_clauses);
-        set<int> dependent_vars;
-        for (int clause_num : dependent_clauses) {
-            for (int var : clause_list[clause_num]) {
-                if (group.find(abs(var)) != group.end()) {
-                    continue;
-                }
-                if (var_to_clauses.find(abs(var)) == var_to_clauses.end()) {
-                    continue;
-                }
-                dependent_vars.insert(abs(var));
-            }
-        }
-
-        int best_var = 0;
-        int min_num_satisfiable = 10000000; // TODO change
-        vector<ImplicationData> best_impls;
-
-
-        for (int var : dependent_vars) {
-            auto impl_list = get_implications(var, group, var_to_clauses, clause_list);
-
-            if (impl_list.empty()) continue;
-
-            int num_sat = 0;
-            for (const auto& ass : satisfiable) {
-                auto p = poss_assign(ass, impl_list);
-                if (p.first) ++num_sat;
-                if (p.second) ++num_sat;
-                if (num_sat >= min_num_satisfiable) break;
-            }
-
-            if (num_sat < min_num_satisfiable) {
-                best_var = var;
-                min_num_satisfiable = num_sat;
-                best_impls = std::move(impl_list);
-            }
-        }
-
-        assert(best_var != 0); // TODO have to check for case where no implications added
-
-        cout << "size: " << group.size() + 1 << " new var: " << best_var << " num sat: " << min_num_satisfiable << " log2: " << log2(min_num_satisfiable) << endl;
-
-        vector<vector<bool>> new_satisfiable;
-        for (auto& ass : satisfiable) {
-            auto p = poss_assign(ass, best_impls);
-            if (p.first && p.second) {
-                ass.push_back(true);
-                new_satisfiable.push_back(ass);
-                ass.back() = false;
-                new_satisfiable.emplace_back(move(ass));
-            } else if (p.first) {
-                ass.push_back(true);
-                new_satisfiable.emplace_back(move(ass));
-            } else if (p.second) {
-                ass.push_back(false);
-                new_satisfiable.emplace_back(move(ass));
-            }
-        }
-        satisfiable = move(new_satisfiable);
-        group[best_var] = counter++;
-    }
-}
-
-AddInfo find_best_to_add2(const set<int>& group, const unordered_map<int, vector<int>>& var_to_clauses, const vector<vector<int>>& clause_list) {
-    set<int> dependent_clauses = get_dependent_clauses(group, var_to_clauses);
-    set<int> dependent_vars;
-    for (int clause_num : dependent_clauses) {
-        for (int var : clause_list[clause_num]) {
-            if (group.find(abs(var)) != group.end()) {
-                //cout << var << " already in group\n";
-                continue;
-            }
-            if (var_to_clauses.find(abs(var)) == var_to_clauses.end()) {
-                //cout << var << " not in var to clauses\n";
-                continue;
-            }
-            dependent_vars.insert(abs(var));
-        }
+        //cout << counter << " num ass " << assignments.size() <<  endl;
     }
 
-    ScoreObj best_score;
-
-    int best_var = 0;
-
-    for (int var : dependent_vars) {
-        if (group.find(var) != group.end()) continue;
-
-        set<int> test_group = group;
-        test_group.insert(var);
-        set<int> test_dependent_clauses = dependent_clauses;
-        for (const int clause_num : var_to_clauses.at(abs(var))) {
-            test_dependent_clauses.insert(clause_num);
-        }
-
-        ScoreObj so;
-
-        for (int clause_num : test_dependent_clauses) {
-            int num_out = 0;
-            for (int clause_var : clause_list[clause_num]) {
-                if (test_group.find(abs(clause_var)) == test_group.end()) {
-                    ++num_out;
-                }
-            }
-
-            switch (num_out) {
-                case 0:
-                    ++so.num0;
-                    break;
-                case 1:
-                    ++so.num1;
-                    break;
-                case 2:
-                    ++so.num2;
-                    break;
-                default:
-                    break;
-            }
-        }
-
-        if (best_score < so) {
-            best_score = so;
-            best_var = var;
-            //cout << "new best var " << best_var << " " << so.num0 << " " << so.num1 << " " << so.num2 << "\n";
-        }
-    }
-
-    AddInfo ai;
-    ai.var = best_var;
-    ai.clause_out = best_score.num1;
-    ai.clause_in = best_score.num0;
-
-    return ai;
+    //ofstream fout("valid_assignments.csv");
+    //for (const auto& ass : assignments) {
+    //    for (auto it = ass.ass.begin(); it != ass.ass.end(); ++it) {
+    //        fout << it->second << ",";
+    //    }
+    //    fout << "\n";
+    //}
+    
+    cout << "num vars: " << counter << " effective vars: " << log2(assignments.size()) <<  endl;
+    return group;
 }
 
 struct VarDeps {
@@ -813,13 +569,27 @@ vector<set<int>> find_connected_components(const vector<vector<int>>& clause_lis
     return components;
 }
 
+int find_start_var(const unordered_map<int, vector<int>>& var_to_clauses, const set<int>& used) {
+    int min_num_clauses = var_to_clauses.size();
+    int start_var;
+    for (auto p : var_to_clauses) {
+        if (used.find(p.first) != used.end()) continue;
+        int num_new_clause = p.second.size();
+        if (num_new_clause < min_num_clauses) {
+            min_num_clauses = num_new_clause;
+            start_var = p.first;
+        }
+    }
+    return start_var;
+}
+
 // vars in group, clauses in group, clauses dependent on group
 // When adding, add var to group, for clauses that has var, check if is now covered by group, and how many are added
 // for each var keep track of clauses they are in
 
 int main(int argc, const char * argv[]) {
     assert(argc == 3);
-    int group_size = atoi(argv[2]);
+    int max_num_ass = atoi(argv[2]);
     int n_vars, n_clauses;
     auto clause_list = read_sat(argv[1], n_vars, n_clauses);
     clause_list = remove_implications(move(clause_list));
@@ -870,36 +640,16 @@ int main(int argc, const char * argv[]) {
         assert(max_component.find(p.first) != max_component.end());
     }
 
-    int min_num_clauses = var_to_clauses.size();
-    int start_var;
-    for (auto p : var_to_clauses) {
-        int num_new_clause = p.second.size();
-        if (num_new_clause < min_num_clauses) {
-            min_num_clauses = num_new_clause;
-            start_var = p.first;
-            cout << "min " << num_new_clause << "\n";
+    set<int> used;
+    while (true) {
+        int start_var = find_start_var(var_to_clauses, used);
+        auto group = get_cluster(start_var, var_to_clauses, clause_list, max_num_ass, used);
+        for (auto p : group) {
+            //var_to_clauses.erase(var);
+            used.insert(p.first);
         }
+        cout << "used size " << used.size() << endl;
     }
-
-    get_cluster(start_var, var_to_clauses, clause_list);
-    return 0;
-    set<int> group;
-    group.insert(start_var);
-
-    for (int i = 0; i < group_size; ++i) {
-        auto ai = find_best_to_add2(group, var_to_clauses, clause_list);
-        assert(max_component.find(abs(ai.var)) != max_component.end());
-        group.insert(ai.var);
-        cout << "report: " << group.size() << " " << ai.clause_out << " " << ai.clause_in << endl;
-    }
-    const vector<int> vars(group.begin(), group.end());
-    set<int> dep_clause_idx = get_dependent_clauses(group, var_to_clauses);
-    vector<vector<int>> dependent_clause_list;
-    for (int idx : dep_clause_idx) {
-        dependent_clause_list.push_back(clause_list[idx]);
-    }
-
-    compute_sat(vars, dependent_clause_list);
 
     return 0;
 }
