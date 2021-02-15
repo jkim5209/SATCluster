@@ -137,6 +137,7 @@ vector<ImplicationData> get_implications(int var, map<int, int> group, const uno
 }
 
 class ImplicationTracker {
+public:
     ImplicationTracker(map<int, int>& implication_counter_, int var_, bool value_) : implication_counter(implication_counter_), var(var_), value(value_) {
         ++implication_counter[var];
     }
@@ -147,6 +148,15 @@ class ImplicationTracker {
 
     ~ImplicationTracker() {
         --implication_counter[var];
+        assert(implication_counter[var] >= 0);
+    }
+
+    bool operator<(const ImplicationTracker& other) {
+        return var < other.var;
+    }
+
+    operator bool() const {
+        return value;
     }
 private:
     map<int, int>& implication_counter;
@@ -156,13 +166,21 @@ private:
 
 class Assignment {
 public:
-    Assignment(const map<int, int>& group_, const unordered_map<int, vector<int>>& var_to_clauses_, const vector<vector<int>>& clause_list_) :
-        group(group_), var_to_clauses(var_to_clauses_), clause_list(clause_list_) {};
+    Assignment(const map<int, int>& group_, const unordered_map<int, vector<int>>& var_to_clauses_, const vector<vector<int>>& clause_list_, map<int, int>& implication_counter_) :
+        group(group_), var_to_clauses(var_to_clauses_), clause_list(clause_list_), implication_counter(implication_counter_) {};
 
-    void add_implications(map<int, int>& implication_counter) const {
-        for (auto p : implications) {
-            ++implication_counter[abs(p.first)];
+    // naively check if we can assign value to var.
+    // if returns false, always false, but might return false positive.
+    // for var and then neg var returned as pair
+    pair<bool, bool> naive_check_assign(int var) {
+        auto it = implications.find(var);
+        if (it == implications.end()) return make_pair(true, true);
+
+        if (it->second) {
+            return make_pair(true, false);
         }
+
+        return make_pair(false, true);
     }
 
     // returns true if valid assignment false otherwise
@@ -216,19 +234,26 @@ public:
 
                 if (clause_sat) continue;
                 if (implication_var == 0) return false;
-                implications[abs(implication_var)] = (implication_var > 0);
+                implications.emplace(abs(implication_var), ImplicationTracker({implication_counter, abs(implication_var), (implication_var > 0)}));
                 unprocessed_implications.push(abs(implication_var));
             }
+            break;// TODO delete
         }
         return true;
     }
 public: // TODO make this private?
     map<int, bool> ass;
-    map<int, bool> implications;
+    map<int, ImplicationTracker> implications;
     const map<int, int>& group;
     const unordered_map<int, vector<int>>& var_to_clauses;
     const vector<vector<int>>& clause_list;
+    map<int, int>& implication_counter;
 }; 
+
+// check if a is a subset of b
+bool isSubset(const vector<int>& a, const vector<int>& b) {
+    return includes(b.begin(), b.end(), a.begin(), a.end());
+}
 
 map<int, int> get_cluster(int init_var, const unordered_map<int, vector<int>>& var_to_clauses, const vector<vector<int>>& clause_list, int max_count, const set<int>& used) {
     int counter = 0;
@@ -237,30 +262,26 @@ map<int, int> get_cluster(int init_var, const unordered_map<int, vector<int>>& v
     //vars.push_back(init_var);
     group[init_var] = counter++;
     vector<Assignment> assignments;
-    assignments.emplace_back(Assignment(group, var_to_clauses, clause_list));
+    map<int, int> implication_counter;
+    assignments.emplace_back(Assignment(group, var_to_clauses, clause_list, implication_counter));
     assignments.back().assign(init_var, true);
-    assignments.emplace_back(Assignment(group, var_to_clauses, clause_list));
+    assignments.emplace_back(Assignment(group, var_to_clauses, clause_list, implication_counter));
     assignments.back().assign(init_var, false);
 
     while (assignments.size() < max_count) {
-        map<int, int> implication_counter;
+
         int max_counter = 0;
         int max_var = 0;
-
-        double num_implications = 0;
-        for (const auto& ass : assignments) {
-            num_implications += ass.implications.size();
-            for (auto p : ass.implications) {
-                int num_impl = ++implication_counter[abs(p.first)];
-                if (num_impl > max_counter && used.find(abs(p.first)) == used.end()) {
-                    max_counter = num_impl;
-                    max_var = abs(p.first);
-                }
+        for (auto p : implication_counter) {
+            if (p.second > max_counter) {
+                max_counter = p.second;
+                max_var = p.first;
             }
         }
         //cout << "avg num implications: " << num_implications / assignments.size() << " " << implication_counter.size() << endl;
 
         assert(max_counter != 0);
+
 
         vector<Assignment> new_assignments;
         group[max_var] = counter++;
@@ -286,7 +307,117 @@ map<int, int> get_cluster(int init_var, const unordered_map<int, vector<int>>& v
     //    fout << "\n";
     //}
     
-    cout << "num vars: " << counter << " effective vars: " << log2(assignments.size()) <<  endl;
+    //cout << "num vars: " << counter << " effective vars: " << log2(assignments.size()) << " raw num " << assignments.size() << endl;
+
+    set<int> relavent_clauses;
+    for (auto p : group) {
+        for (int clause_num : var_to_clauses.at(p.first)) {
+            relavent_clauses.insert(clause_num);
+        }
+    }
+    vector<int> external_clauses;
+    vector<int> internal_clauses;
+    for (int clause_num : relavent_clauses) {
+        bool internal = true;
+        for (int clause_var : clause_list[clause_num]) {
+            if (group.find(abs(clause_var)) == group.end()) {
+                internal = false;
+                break;
+            }
+        }
+        if (internal) internal_clauses.push_back(clause_num);
+        else external_clauses.push_back(clause_num);
+    }
+
+    cout << "num internal clauses: " << internal_clauses.size() << " external " << external_clauses.size() << "\n";
+
+    // stat checking
+    for (const auto& ass : assignments) {
+        for (int clause_num : internal_clauses) {
+            bool satisfied = false;
+            for (int clause_var : clause_list[clause_num]) {
+                auto it = ass.ass.find(abs(clause_var));
+                if (it == ass.ass.end()) continue;
+                if (it->second == (clause_var > 0)) {
+                    satisfied = true;
+                    break;
+                }
+            }
+            assert(satisfied);
+        }
+    }
+
+
+    vector<vector<int>> clause_sat_groups;
+    int max_sat = 0;
+    double tot_sat = 0;
+    for (const auto& ass : assignments) {
+        vector<int> sat_groups;
+        int num_sat = 0;
+        for (int clause_num : external_clauses) {
+            bool satisfied = false;
+            for (int clause_var : clause_list[clause_num]) {
+                auto it = ass.ass.find(abs(clause_var));
+                if (it == ass.ass.end()) continue;
+                if (it->second == (clause_var > 0)) {
+                    satisfied = true;
+                    break;
+                }
+            }
+            if (satisfied) {
+                sat_groups.push_back(clause_num);
+                ++num_sat;
+            }
+        }
+        clause_sat_groups.emplace_back(move(sat_groups));
+        if (max_sat < num_sat) max_sat = num_sat;
+        tot_sat += num_sat;
+    }
+    cout << "max sat " << max_sat << "avg " << tot_sat / assignments.size() << endl;
+    cout << "sat group size" << clause_sat_groups.back().size() << endl;
+
+    // sort with least sat first
+    sort(clause_sat_groups.begin(), clause_sat_groups.end(), [](const vector<int>& a, const vector<int>& b) {return a.size() < b.size(); });
+    int num_subset = 0;
+    vector<vector<int>> clause_sat_groups_no_subset;
+    for (size_t i = 0; i < clause_sat_groups.size(); ++i) {
+        // TODO prob more efficient if you go backwards
+        bool is_subset = false;
+        for (size_t j = i + 1; j < clause_sat_groups.size(); ++j) {
+            if (isSubset(clause_sat_groups[i], clause_sat_groups[j])) {
+                //cout << "found subset!\n";
+                ++num_subset;
+                is_subset = true;
+                break;
+            }
+        }
+
+        if (!is_subset) clause_sat_groups_no_subset.push_back(clause_sat_groups[i]);
+    }
+
+    map<int, int> num_sat_counter;
+    for (const auto& sats : clause_sat_groups_no_subset) {
+        for (int clause_num : sats) {
+            ++num_sat_counter[clause_num];
+        }
+    }
+    int always_covered = 0;
+    int never_covered = 0;
+    for (int clause_num : external_clauses) {
+        auto it = num_sat_counter.find(clause_num);
+        if (it == num_sat_counter.end()) {
+            ++never_covered;
+            continue;
+        }
+
+        if (it->second == clause_sat_groups_no_subset.size()) ++always_covered;
+    }
+    
+
+    cout << "never covered " << never_covered << " always covered " << always_covered << endl;
+    cout << "num vars: " << counter << " effective vars: " << log2(assignments.size()) << " raw num " << assignments.size() << " num subset: " << num_subset << endl;;
+
+    assignments.clear(); // have to make sure implication trackers dtor gets called before implication_counter goes away
     return group;
 }
 
